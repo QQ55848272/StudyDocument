@@ -1,0 +1,334 @@
+# Spark 集群配置
+
+## 一 配置域名
+
+### 1、配置 `/etc/hosts`
+
+| 场景                                                      | 原因                                                         |
+| --------------------------------------------------------- | ------------------------------------------------------------ |
+| **你用主机名 `node1`、`node2` 登录**                      | 需要 `/etc/hosts` 里能解析这些主机名                         |
+| **没有配置 DNS**                                          | 本地 `/etc/hosts` 是最直接、稳定的解析方式                   |
+| **分布式组件（如 Hadoop、Kafka、Spark）通信时依赖主机名** | 主机名必须能相互解析，否则组件间通信失败                     |
+| **SSH 免密时用主机名而不是 IP**                           | 必须配置，否则会提示 `Could not resolve hostname node2` 错误 |
+
+
+
+------
+
+### 2.如何配置 `/etc/hosts`
+
+假设三台机器的 IP 和主机名如下：
+
+| 主机名 | IP地址        |
+| ------ | ------------- |
+| node1  | 192.168.1.101 |
+| node2  | 192.168.1.102 |
+| node3  | 192.168.1.103 |
+
+
+
+每台机器都在 **`/etc/hosts`** 文件中添加以下内容：
+
+```bash
+192.168.1.101  node1
+192.168.1.102  node2
+192.168.1.103  node3
+```
+
+#### 编辑命令：
+
+```bash
+sudo vim /etc/hosts
+```
+
+将上述内容添加到文件底部即可。
+
+------
+
+### 3.设置主机名（可选但推荐）
+
+三台机器分别设置自己的主机名（方便 ssh 显示和日志识别）：
+
+```bash
+# 在 node1 上执行：
+hostnamectl set-hostname node1
+
+# 在 node2 上执行：
+hostnamectl set-hostname node2
+
+# 在 node3 上执行：
+hostnamectl set-hostname node3
+```
+
+重新登录或执行 `exec bash` 即可生效。
+
+
+
+要在三台 Linux 机器之间配置 **免密登录（SSH 免密登录）**，可以使用 `ssh-keygen` 和 `ssh-copy-id` 命令。下面是详细步骤（假设三台机器分别是 A、B、C）：
+
+------
+
+## 二 实现机器互相 SSH 免密登录
+
+| 主机 | IP（示例）    | 主机名（示例） |
+| ---- | ------------- | -------------- |
+| A    | 192.168.1.101 | node1          |
+| B    | 192.168.1.102 | node2          |
+| C    | 192.168.1.103 | node3          |
+
+
+
+### 1. 生成 SSH 密钥（每台都要执行）
+
+```bash
+ssh-keygen -t rsa -N "" -f ~/.ssh/id_rsa
+```
+
+- `-t rsa`: 指定密钥类型为 RSA
+- `-N ""`: 空密码，免交互
+- `-f`: 指定密钥文件路径
+
+执行完后，会生成两个文件：
+
+```bash
+~/.ssh/id_rsa        # 私钥
+~/.ssh/id_rsa.pub    # 公钥
+```
+
+
+
+`~` 是 **Linux 系统中当前用户的主目录的缩写**，它的作用等价于 `$HOME` 变量。
+
+------
+
+ **解释各部分：**
+
+| 符号/参数 | 含义                                                         |
+| --------- | ------------------------------------------------------------ |
+| `~`       | 当前用户的 home 目录，比如： 如果你是 `root` 用户：`~` 等于 `/root` 如果你是 `user1` 用户：`~` 等于 `/home/user1` |
+| `.ssh/`   | 是一个隐藏目录，用来存放 SSH 相关的配置文件、密钥对等        |
+| `id_rsa`  | 是 SSH 私钥的默认文件名（公钥是 `id_rsa.pub`）               |
+
+------
+
+### 2. 互相添加公钥（核心步骤）
+
+#### 使用 `ssh-copy-id` 自动添加（推荐）
+
+在每台机器上执行以下命令，把自己公钥发给其他两台：
+
+```bash
+# A 上执行
+ssh-copy-id node2
+ssh-copy-id node3
+
+# B 上执行
+ssh-copy-id node1
+ssh-copy-id node3
+
+# C 上执行
+ssh-copy-id node1
+ssh-copy-id node2
+```
+
+如果提示 `yes/no`，输入 `yes`，然后输入目标机器的登录密码即可。
+
+### 3.验证免密登录是否成功
+
+在每台机器上尝试：
+
+```bash
+ssh node2
+ssh node3
+```
+
+如果无需输入密码即登录，说明成功。
+
+
+
+## 三  安装Spark集群
+
+### 1. 安装 Java（Spark 依赖）
+
+```bash
+sudo yum install java-1.8.0-openjdk -y  #安装jre
+yum install java-1.8.0-openjdk-devel -y #安装jdk
+```
+
+或用压缩包安装后设置：
+
+```bash
+export JAVA_HOME=/opt/jdk1.8.0_xx
+export PATH=$JAVA_HOME/bin:$PATH
+```
+
+### 2.下载 Spark 安装包
+
+从官网或镜像下载：
+
+- https://spark.apache.org/downloads.html
+- 推荐使用带 Hadoop 的版本（如：spark-3.4.1-bin-hadoop3）
+
+```bash
+# 示例
+wget https://archive.apache.org/dist/spark/spark-3.4.1/spark-3.4.1-bin-hadoop3.tgz
+tar -zxvf spark-3.4.1-bin-hadoop3.tgz -C /opt/
+ln -s /opt/spark-3.4.1-bin-hadoop3 /opt/spark
+```
+
+------
+
+### 3. 配置 Spark（只需要配置一次后分发）
+
+**编辑 `spark-env.sh`**
+
+```bash
+cp /opt/spark/conf/spark-env.sh.template /opt/spark/conf/spark-env.sh
+vim /opt/spark/conf/spark-env.sh
+```
+
+添加：
+
+```bash
+export JAVA_HOME=/usr/lib/jvm/java-1.8.0-openjdk
+export SPARK_MASTER_HOST=node1
+export SPARK_WORKER_CORES=2
+export SPARK_WORKER_MEMORY=2g
+export SPARK_HOME=/opt/spark
+```
+
+### 配置 `slaves` 或 `workers`
+
+```bash
+vim /opt/spark/conf/workers
+```
+
+内容如下：
+
+```bash
+node2
+node3
+```
+
+
+
+------
+
+### 4. 分发 Spark 到其他节点
+
+```bash
+scp -r /opt/spark node2:/opt/
+scp -r /opt/spark node3:/opt/
+```
+
+确保所有节点的路径一致。
+
+------
+
+### 5.启动集群（在 Master 上执行）
+
+```bash
+/opt/spark/sbin/start-all.sh
+```
+
+启动后你可以看到类似：
+
+```bash
+starting org.apache.spark.deploy.master.Master ...
+starting org.apache.spark.deploy.worker.Worker ...
+```
+
+------
+
+### 6. 访问 Web UI
+
+| 角色      | 地址                          |
+| --------- | ----------------------------- |
+| Master UI | http://node1:8080             |
+| Worker UI | 点进去即可看到每个 **Worker** |
+
+### 7. 验证集群运行情况
+
+运行一个示例程序：
+
+```bash
+/opt/spark/bin/spark-submit \
+  --master spark://node1:7077 \
+  --class org.apache.spark.examples.SparkPi \
+  /opt/spark/examples/jars/spark-examples_*.jar 10
+```
+
+输出中会有类似 `Pi is roughly 3.14xxx` 的信息，说明集群工作正常。
+
+------
+
+### 8 停止集群
+
+```bash
+/opt/spark/sbin/stop-all.sh
+```
+
+### 9.可选：环境变量配置（每台机器）
+
+将以下内容添加到 `~/.bashrc`：
+
+```bash
+export SPARK_HOME=/opt/spark
+export PATH=$SPARK_HOME/bin:$SPARK_HOME/sbin:$PATH
+```
+
+
+
+## 四 配置nginx给上传jar共享文件
+
+### 1. 安装 Nginx：
+
+```bash
+sudo yum install -y nginx   # CentOS / RHEL
+sudo apt install -y nginx   # Ubuntu / Debian
+```
+
+### 2. 修改配置文件 `/etc/nginx/nginx.conf`：
+
+添加一段配置用于 `/opt/sparkJar` 目录：
+
+```nginx
+server {
+    listen 8080;
+    server_name localhost;
+
+    location / {
+        autoindex on;
+        root /opt/sparkJar;
+    }
+}
+```
+
+
+
+```bash
+#查看nginx配置文件是否正确
+nginx -t
+```
+
+```bash
+#请确保 /opt/sparkJar 及其上级目录对 Nginx 用户（通常是 nginx）可访问：
+chmod +x /opt
+chmod +x /opt/sparkJar
+#确保该目录和文件拥有读权限：
+chmod -R a+r /opt/sparkJar
+```
+
+
+
+```bash
+#查看 Nginx 状态
+systemctl status nginx.service
+sudo systemctl restart nginx
+```
+
+### 3. 访问地址：
+
+```bash
+http://<你的机器IP>:8080/test.jar
+```
